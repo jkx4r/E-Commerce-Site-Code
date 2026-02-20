@@ -20,6 +20,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS products 
                  (id INTEGER PRIMARY KEY, name TEXT, price REAL, img TEXT, description TEXT)''')
     
+    # FIX: Automatic migration if column is missing from old database files
     try:
         c.execute("SELECT description FROM products LIMIT 1")
     except sqlite3.OperationalError:
@@ -43,7 +44,7 @@ def get_header(user=None):
     if user and user['role'] != 'admin':
         nav_links += '<a href="/cart" class="hover:text-indigo-600 transition ml-4">🛒 Cart</a>'
     if user and user['role'] == 'admin':
-        nav_links += '<a href="/admin" class="hover:text-indigo-600 transition ml-4">Dashboard</a>'
+        nav_links += '<a href="/admin" class="hover:text-indigo-600 transition ml-4 font-bold text-indigo-600">📊 Admin</a>'
     
     auth_link = f'''
         <a href="/profile" class="text-indigo-600 font-medium hover:underline mr-4">Edit Profile</a>
@@ -58,8 +59,9 @@ def get_header(user=None):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Techify</title>
+        <title>Techify Store</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
         <style>
             body {{ font-family: 'Inter', sans-serif; }}
@@ -102,11 +104,12 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
         if parsed_path.path == '/':
             search_query = query_params.get('q', [''])[0]
             conn = sqlite3.connect(DB_PATH)
+            # Fetch specifically to avoid index errors
             products = conn.execute("SELECT id, name, price, img, description FROM products WHERE name LIKE ?", (f'%{search_query}%',)).fetchall()
             conn.close()
             items_html = ""
             for p in products:
-                # Add to cart is separate from the link to description
+                # Add to cart is separate at the bottom
                 cart_btn = f'''<form action="/cart/add" method="POST" class="mt-auto">
                                 <input type="hidden" name="product_id" value="{p[0]}">
                                 <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-2xl font-semibold hover:bg-indigo-700 transition-all active:scale-95 shadow-lg shadow-indigo-100">Add to Cart</button>
@@ -119,7 +122,7 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
                         <div class="p-6 pb-2">
                             <h3 class="text-lg font-bold text-gray-900 truncate group-hover:text-indigo-600 transition">{p[1]}</h3>
                             <p class="text-indigo-600 font-extrabold text-xl mt-1">${p[2]:,.2f}</p>
-                            <p class="text-gray-400 text-xs mt-2 line-clamp-1 italic">Click to view details</p>
+                            <p class="text-gray-400 text-xs mt-2 line-clamp-1 italic">Click to view description</p>
                         </div>
                     </a>
                     <div class="p-6 pt-0 mt-auto">
@@ -127,14 +130,13 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
                     </div>
                 </div>'''
             search_bar = f'<form action="/" method="GET" class="mb-10 flex gap-3"><input name="q" value="{search_query}" placeholder="Search products..." class="flex-1 border p-4 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-100 border-gray-200 shadow-sm transition"><button class="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-bold">Search</button></form>'
-            self.send_html(get_header(user) + f'<div class="max-w-6xl mx-auto p-6"><h1 class="text-4xl font-extrabold mb-8 text-gray-900 tracking-tight">Discover Collection</h1>{search_bar}<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8">{items_html}</div></div>')
+            self.send_html(get_header(user) + f'<div class="max-w-6xl mx-auto p-6"><h1 class="text-4xl font-extrabold mb-8 text-gray-900 tracking-tight">Store Collection</h1>{search_bar}<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8">{items_html}</div></div>')
 
         elif parsed_path.path == '/product':
             pid = query_params.get('id', [None])[0]
             conn = sqlite3.connect(DB_PATH)
             p = conn.execute("SELECT id, name, price, img, description FROM products WHERE id=?", (pid,)).fetchone()
             conn.close()
-            
             if not p: self.redirect('/'); return
 
             cart_btn = f'''
@@ -150,12 +152,12 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
                         <img src="{p[3]}" class="max-w-full h-auto rounded-3xl shadow-lg">
                     </div>
                     <div class="md:w-1/2 p-10 md:p-16 flex flex-col justify-center">
-                        <a href="/" class="text-indigo-600 font-bold text-sm uppercase tracking-widest mb-4 inline-block hover:underline">← Back to Collection</a>
+                        <a href="/" class="text-indigo-600 font-bold text-sm uppercase tracking-widest mb-4 inline-block hover:underline">← Back to Home</a>
                         <h1 class="text-4xl md:text-5xl font-black text-gray-900 mb-4">{p[1]}</h1>
                         <p class="text-3xl font-bold text-indigo-600 mb-8">${p[2]:,.2f}</p>
-                        <div class="prose prose-indigo">
+                        <div>
                             <h3 class="text-gray-400 text-xs font-bold uppercase tracking-wider mb-2">Description</h3>
-                            <p class="text-gray-600 leading-relaxed text-lg">{p[4] if p[4] else "No detailed description provided for this item."}</p>
+                            <p class="text-gray-600 leading-relaxed text-lg">{p[4] if p[4] else "No description available."}</p>
                         </div>
                         {cart_btn}
                     </div>
@@ -177,11 +179,16 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
         elif parsed_path.path == '/admin':
             if not user or user['role'] != 'admin': self.redirect('/login'); return
             conn = sqlite3.connect(DB_PATH)
+            
+            # Aggregate stats for Graph
+            stats = conn.execute('''SELECT products.name, SUM(carts.quantity) FROM carts JOIN products ON carts.product_id = products.id GROUP BY products.id ORDER BY SUM(carts.quantity) DESC''').fetchall()
+            chart_labels = [s[0] for s in stats]
+            chart_data = [s[1] for s in stats]
+
             products = conn.execute("SELECT id, name, price, img, description FROM products").fetchall()
             conn.close()
-            rows = ""
-            for p in products:
-                rows += f'''<tr class="border-b">
+            
+            rows = "".join([f'''<tr class="border-b">
                     <td class="p-4 text-xs">#{p[0]}</td>
                     <td class="p-4"><img src="{p[3]}" class="thumb-crop"></td>
                     <td class="p-4 font-bold">{p[1]}</td>
@@ -196,8 +203,33 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
                         </form>
                     </td>
                     <td class="p-4 text-center"><a href="/admin/delete?id={p[0]}" class="text-red-500 font-semibold hover:underline text-xs">Delete</a></td>
-                </tr>'''
-            self.send_html(get_header(user) + f'<div class="max-w-6xl mx-auto p-6"><div class="bg-white p-10 rounded-3xl shadow-sm border mb-8"><h2 class="text-2xl font-bold mb-6">Add New Product</h2><form action="/admin/add" method="POST" class="grid grid-cols-1 md:grid-cols-4 gap-4"><input name="name" placeholder="Name" class="border p-3 rounded-xl outline-none" required><input name="price" type="number" step="0.01" placeholder="Price" class="border p-3 rounded-xl outline-none" required><input name="img" placeholder="Image URL" class="border p-3 rounded-xl outline-none"><textarea name="desc" placeholder="Description" class="border p-3 rounded-xl outline-none md:col-span-3"></textarea><button class="bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">Add Item</button></form></div><div class="bg-white p-6 rounded-3xl shadow-sm border overflow-hidden"><h2 class="text-2xl font-bold mb-6 px-4 pt-4 text-gray-900">Inventory</h2><table class="w-full text-left"><thead><tr class="bg-gray-50 border-b text-gray-500 uppercase text-xs tracking-wider"><th class="p-4">ID</th><th class="p-4">Preview</th><th class="p-4">Name</th><th class="p-4">Modify Details</th><th class="p-4 text-center">Action</th></tr></thead><tbody>{rows}</tbody></table></div></div>')
+                </tr>''' for p in products])
+
+            self.send_html(get_header(user) + f'''<div class="max-w-6xl mx-auto p-6">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
+                    <div class="lg:col-span-2 bg-white p-8 rounded-3xl border shadow-sm">
+                        <h3 class="font-bold mb-4">Cart Demand Report</h3>
+                        <canvas id="cartChart" height="150"></canvas>
+                    </div>
+                    <div class="bg-indigo-600 text-white p-8 rounded-3xl shadow-xl flex flex-col justify-center">
+                        <h3 class="opacity-80">Highest Demand</h3>
+                        <p class="text-2xl font-black mt-2">{(chart_labels[0] if chart_labels else "No Data")}</p>
+                    </div>
+                </div>
+                <div class="bg-white p-10 rounded-3xl shadow-sm border mb-8"><h2 class="text-2xl font-bold mb-6">Add New Product</h2><form action="/admin/add" method="POST" class="grid grid-cols-1 md:grid-cols-4 gap-4"><input name="name" placeholder="Name" class="border p-3 rounded-xl outline-none" required><input name="price" type="number" step="0.01" placeholder="Price" class="border p-3 rounded-xl outline-none" required><input name="img" placeholder="Image URL" class="border p-3 rounded-xl outline-none"><textarea name="desc" placeholder="Description" class="border p-3 rounded-xl outline-none md:col-span-3"></textarea><button class="bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">Add Item</button></form></div>
+                <div class="bg-white p-6 rounded-3xl shadow-sm border overflow-hidden"><h2 class="text-2xl font-bold mb-6 px-4 pt-4 text-gray-900">Inventory</h2><table class="w-full text-left"><thead><tr class="bg-gray-50 border-b uppercase text-xs"><th>ID</th><th>Preview</th><th>Name</th><th>Modify Details</th><th class="text-center">Action</th></tr></thead><tbody>{rows}</tbody></table></div>
+            </div>
+            <script>
+                const ctx = document.getElementById('cartChart').getContext('2d');
+                new Chart(ctx, {{
+                    type: 'bar',
+                    data: {{
+                        labels: {json.dumps(chart_labels)},
+                        datasets: [{{ label: 'Units in Carts', data: {json.dumps(chart_data)}, backgroundColor: '#6366f1', borderRadius: 10 }}]
+                    }},
+                    options: {{ responsive: true }}
+                }});
+            </script>''')
 
         elif parsed_path.path == '/cart':
             if not user or user['role'] == 'admin': self.redirect('/'); return
@@ -211,12 +243,11 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
                         <div class="space-y-1">
                             <h4 class="font-bold text-gray-900">{item[0]}</h4>
                             <p class="text-gray-400 text-xs line-clamp-1">{item[6] if item[6] else ''}</p>
-                            <p class="text-gray-400 text-xs">${item[1]:,.2f} per unit</p>
                             <div class="flex items-center gap-3 pt-2">
-                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="change" value="-1"><button class="w-8 h-8 bg-gray-100 rounded hover:bg-gray-200">-</button></form>
+                                <form action="/cart/qty" method="POST"><input type="hidden" name="product_id" value="{item[4]}"><input type="hidden" name="change" value="-1"><button class="w-8 h-8 bg-gray-100 rounded hover:bg-gray-200">-</button></form>
                                 <span class="qty-display font-bold text-sm w-4 text-center">{item[2]}</span>
-                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="change" value="1"><button class="w-8 h-8 bg-gray-100 rounded hover:bg-gray-200">+</button></form>
-                                <a href="/cart/delete?id={item[5]}" class="ml-6 text-xs font-bold text-red-400 hover:text-red-600">Remove</a>
+                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="product_id" value="{item[4]}"><input type="hidden" name="change" value="1"><button class="w-8 h-8 bg-gray-100 rounded hover:bg-gray-200">+</button></form>
+                                <a href="/cart/delete?id={item[4]}" class="ml-6 text-xs font-bold text-red-400 hover:text-red-600">Remove</a>
                             </div>
                         </div></div>
                     <div class="font-extrabold text-gray-900 text-lg">${(item[1]*item[2]):,.2f}</div></div>''' for item in cart_items])
@@ -250,8 +281,8 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
 
         elif parsed_path.path == '/cart/delete':
             if user:
-                cid = query_params.get('id', [None])[0]
-                conn = sqlite3.connect(DB_PATH); conn.execute("DELETE FROM carts WHERE id=? AND username=?", (cid, user['name'])); conn.commit(); conn.close()
+                pid = query_params.get('id', [None])[0]
+                conn = sqlite3.connect(DB_PATH); conn.execute("DELETE FROM carts WHERE product_id=? AND username=?", (pid, user['name'])); conn.commit(); conn.close()
             self.redirect('/cart')
 
     def do_POST(self):
@@ -271,6 +302,12 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH); res = conn.execute("SELECT role FROM users WHERE username=? AND password=?", (u, p)).fetchone(); conn.close()
             if res: self.send_response(302); self.send_header('Set-Cookie', f'user={u}; Path=/; HttpOnly'); self.send_header('Location', '/'); self.end_headers()
             else: self.redirect('/login?error=1')
+
+        elif self.path == '/admin/update_item':
+            if user_session and user_session['role'] == 'admin':
+                pid, pr, d = data.get('id', [''])[0], data.get('price', ['0'])[0], data.get('desc', [''])[0]
+                conn = sqlite3.connect(DB_PATH); conn.execute("UPDATE products SET price=?, description=? WHERE id=?", (float(pr), d, pid)); conn.commit(); conn.close()
+            self.redirect('/admin')
 
         elif self.path == '/profile/update':
             if not user_session: self.redirect('/login'); return
@@ -295,24 +332,16 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
 
         elif self.path == '/cart/qty':
             if not user_session or user_session['role'] == 'admin': self.redirect('/'); return
-            cid, change = data.get('id', [''])[0], int(data.get('change', ['0'])[0])
+            pid, change = data.get('product_id', [''])[0], int(data.get('change', ['0'])[0])
             conn = sqlite3.connect(DB_PATH)
-            conn.execute('UPDATE carts SET quantity = quantity + ? WHERE id = ? AND username = ?', (change, cid, user_session['name']))
-            conn.execute('DELETE FROM carts WHERE id = ? AND quantity < 1', (cid,))
+            conn.execute('UPDATE carts SET quantity = quantity + ? WHERE product_id = ? AND username = ?', (change, pid, user_session['name']))
+            conn.execute('DELETE FROM carts WHERE product_id = ? AND quantity < 1', (pid,))
             conn.commit(); conn.close(); self.redirect('/cart')
 
         elif self.path == '/admin/add':
             if user_session and user_session['role'] == 'admin':
                 n, pr, i, d = data.get('name', [''])[0], data.get('price', ['0'])[0], data.get('img', [''])[0], data.get('desc', [''])[0]
                 conn = sqlite3.connect(DB_PATH); conn.execute("INSERT INTO products (name, price, img, description) VALUES (?,?,?,?)", (n, float(pr), i, d)); conn.commit(); conn.close()
-            self.redirect('/admin')
-
-        elif self.path == '/admin/update_item':
-            if user_session and user_session['role'] == 'admin':
-                pid, pr, d = data.get('id', [''])[0], data.get('price', ['0'])[0], data.get('desc', [''])[0]
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute("UPDATE products SET price=?, description=? WHERE id=?", (float(pr), d, pid))
-                conn.commit(); conn.close()
             self.redirect('/admin')
 
         elif self.path == '/cart/add':
