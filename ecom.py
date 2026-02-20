@@ -18,7 +18,13 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS products 
-                 (id INTEGER PRIMARY KEY, name TEXT, price REAL, img TEXT)''')
+                 (id INTEGER PRIMARY KEY, name TEXT, price REAL, img TEXT, description TEXT)''')
+    
+    try:
+        c.execute("SELECT description FROM products LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE products ADD COLUMN description TEXT")
+        
     c.execute('''CREATE TABLE IF NOT EXISTS carts 
                  (id INTEGER PRIMARY KEY, username TEXT, product_id INTEGER, quantity INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS addresses 
@@ -34,23 +40,17 @@ def init_db():
 # --- HTML TEMPLATES ---
 def get_header(user=None):
     nav_links = '<a href="/" class="hover:text-indigo-600 transition">Home</a>'
-    
-    # MODIFIED: Only show Cart if user is NOT an admin
     if user and user['role'] != 'admin':
         nav_links += '<a href="/cart" class="hover:text-indigo-600 transition ml-4">🛒 Cart</a>'
-        
     if user and user['role'] == 'admin':
         nav_links += '<a href="/admin" class="hover:text-indigo-600 transition ml-4">Dashboard</a>'
     
-    if user:
-        auth_link = f'''
-            <a href="/profile" class="text-indigo-600 font-medium hover:underline mr-4">Edit Profile</a>
-            <span class="text-gray-500 mr-2">Hi, {user['name']}</span>
-            <a href="/logout" class="text-red-500 hover:text-red-700">Logout</a>'''
-    else:
-        auth_link = '''
-            <a href="/login" class="text-indigo-600 font-medium hover:underline">Login</a>
-            <a href="/register" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition ml-4">Register</a>'''
+    auth_link = f'''
+        <a href="/profile" class="text-indigo-600 font-medium hover:underline mr-4">Edit Profile</a>
+        <span class="text-gray-500 mr-2">Hi, {user['name']}</span>
+        <a href="/logout" class="text-red-500 hover:text-red-700">Logout</a>''' if user else '''
+        <a href="/login" class="text-indigo-600 font-medium hover:underline">Login</a>
+        <a href="/register" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition ml-4">Register</a>'''
     
     return f'''
     <!DOCTYPE html>
@@ -65,7 +65,7 @@ def get_header(user=None):
             body {{ font-family: 'Inter', sans-serif; }}
             .aspect-square-crop {{ position: relative; width: 100%; padding-top: 100%; overflow: hidden; background-color: #f3f4f6; }}
             .aspect-square-crop img {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s ease; }}
-            .group:hover .aspect-square-crop img {{ transform: scale(1.1); }}
+            .group:hover .aspect-square-crop img {{ transform: scale(1.05); }}
             .thumb-crop {{ width: 80px; height: 80px; object-fit: cover; border-radius: 12px; border: 1px solid #e5e7eb; }}
         </style>
     </head>
@@ -102,27 +102,66 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
         if parsed_path.path == '/':
             search_query = query_params.get('q', [''])[0]
             conn = sqlite3.connect(DB_PATH)
-            products = conn.execute("SELECT * FROM products WHERE name LIKE ?", (f'%{search_query}%',)).fetchall() if search_query else conn.execute("SELECT * FROM products").fetchall()
+            products = conn.execute("SELECT id, name, price, img, description FROM products WHERE name LIKE ?", (f'%{search_query}%',)).fetchall()
             conn.close()
             items_html = ""
             for p in products:
-                # MODIFIED: Do not show "Add to Cart" button if user is an Admin
-                cart_form = ""
-                if not user or user['role'] != 'admin':
-                    cart_form = f'''<form action="/cart/add" method="POST"><input type="hidden" name="product_id" value="{p[0]}">
-                                    <button type="submit" class="w-full mt-4 bg-gray-900 text-white py-3 rounded-2xl font-semibold hover:bg-indigo-600 transition-all active:scale-95">Add to Cart</button></form>'''
+                # Add to cart is separate from the link to description
+                cart_btn = f'''<form action="/cart/add" method="POST" class="mt-auto">
+                                <input type="hidden" name="product_id" value="{p[0]}">
+                                <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-2xl font-semibold hover:bg-indigo-700 transition-all active:scale-95 shadow-lg shadow-indigo-100">Add to Cart</button>
+                               </form>''' if not user or user['role'] != 'admin' else ""
                 
                 items_html += f'''
-                <div class="bg-white rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl transition group overflow-hidden">
-                    <div class="aspect-square-crop"><img src="{p[3] if p[3] else "https://via.placeholder.com/400"}"></div>
-                    <div class="p-6">
-                        <h3 class="text-lg font-bold text-gray-900 truncate">{p[1]}</h3>
-                        <p class="text-indigo-600 font-extrabold text-xl mt-1">${p[2]:,.2f}</p>
-                        {cart_form}
+                <div class="bg-white rounded-[2rem] shadow-sm border border-gray-100 hover:shadow-xl transition group overflow-hidden flex flex-col h-full">
+                    <a href="/product?id={p[0]}" class="block">
+                        <div class="aspect-square-crop"><img src="{p[3] if p[3] else "https://via.placeholder.com/400"}"></div>
+                        <div class="p-6 pb-2">
+                            <h3 class="text-lg font-bold text-gray-900 truncate group-hover:text-indigo-600 transition">{p[1]}</h3>
+                            <p class="text-indigo-600 font-extrabold text-xl mt-1">${p[2]:,.2f}</p>
+                            <p class="text-gray-400 text-xs mt-2 line-clamp-1 italic">Click to view details</p>
+                        </div>
+                    </a>
+                    <div class="p-6 pt-0 mt-auto">
+                        {cart_btn}
                     </div>
                 </div>'''
             search_bar = f'<form action="/" method="GET" class="mb-10 flex gap-3"><input name="q" value="{search_query}" placeholder="Search products..." class="flex-1 border p-4 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-100 border-gray-200 shadow-sm transition"><button class="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-bold">Search</button></form>'
             self.send_html(get_header(user) + f'<div class="max-w-6xl mx-auto p-6"><h1 class="text-4xl font-extrabold mb-8 text-gray-900 tracking-tight">Discover Collection</h1>{search_bar}<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8">{items_html}</div></div>')
+
+        elif parsed_path.path == '/product':
+            pid = query_params.get('id', [None])[0]
+            conn = sqlite3.connect(DB_PATH)
+            p = conn.execute("SELECT id, name, price, img, description FROM products WHERE id=?", (pid,)).fetchone()
+            conn.close()
+            
+            if not p: self.redirect('/'); return
+
+            cart_btn = f'''
+                <form action="/cart/add" method="POST" class="mt-8">
+                    <input type="hidden" name="product_id" value="{p[0]}">
+                    <button type="submit" class="w-full md:w-auto bg-indigo-600 text-white px-12 py-4 rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition active:scale-95">Add to Cart</button>
+                </form>''' if not user or user['role'] != 'admin' else ""
+
+            content = f'''
+            <div class="max-w-6xl mx-auto p-6 mt-10">
+                <div class="bg-white rounded-[2.5rem] shadow-2xl border border-gray-50 overflow-hidden flex flex-col md:flex-row">
+                    <div class="md:w-1/2 bg-gray-50 flex items-center justify-center p-8">
+                        <img src="{p[3]}" class="max-w-full h-auto rounded-3xl shadow-lg">
+                    </div>
+                    <div class="md:w-1/2 p-10 md:p-16 flex flex-col justify-center">
+                        <a href="/" class="text-indigo-600 font-bold text-sm uppercase tracking-widest mb-4 inline-block hover:underline">← Back to Collection</a>
+                        <h1 class="text-4xl md:text-5xl font-black text-gray-900 mb-4">{p[1]}</h1>
+                        <p class="text-3xl font-bold text-indigo-600 mb-8">${p[2]:,.2f}</p>
+                        <div class="prose prose-indigo">
+                            <h3 class="text-gray-400 text-xs font-bold uppercase tracking-wider mb-2">Description</h3>
+                            <p class="text-gray-600 leading-relaxed text-lg">{p[4] if p[4] else "No detailed description provided for this item."}</p>
+                        </div>
+                        {cart_btn}
+                    </div>
+                </div>
+            </div>'''
+            self.send_html(get_header(user) + content)
 
         elif parsed_path.path == '/register':
             error_msg = ""
@@ -138,66 +177,61 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
         elif parsed_path.path == '/admin':
             if not user or user['role'] != 'admin': self.redirect('/login'); return
             conn = sqlite3.connect(DB_PATH)
-            products = conn.execute("SELECT * FROM products").fetchall()
+            products = conn.execute("SELECT id, name, price, img, description FROM products").fetchall()
             conn.close()
-            rows = "".join([f'<tr class="border-b"><td class="p-4">#{p[0]}</td><td class="p-4"><img src="{p[3]}" class="thumb-crop"></td><td class="p-4 font-bold">{p[1]}</td><td class="p-4 text-indigo-600 font-bold">${p[2]:,.2f}</td><td class="p-4"><a href="/admin/delete?id={p[0]}" class="text-red-500 font-semibold hover:underline">Delete</a></td></tr>' for p in products])
-            self.send_html(get_header(user) + f'<div class="max-w-5xl mx-auto p-6"><div class="bg-white p-10 rounded-3xl shadow-sm border mb-8"><h2 class="text-2xl font-bold mb-6">Add New Product</h2><form action="/admin/add" method="POST" class="grid grid-cols-1 md:grid-cols-4 gap-4"><input name="name" placeholder="Name" class="border p-3 rounded-xl outline-none" required><input name="price" type="number" step="0.01" placeholder="Price" class="border p-3 rounded-xl outline-none" required><input name="img" placeholder="Image URL" class="border p-3 rounded-xl outline-none"><button class="bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">Add Item</button></form></div><div class="bg-white p-6 rounded-3xl shadow-sm border overflow-hidden"><h2 class="text-2xl font-bold mb-6 px-4 pt-4 text-gray-900">Inventory</h2><table class="w-full text-left"><thead><tr class="bg-gray-50 border-b text-gray-500 uppercase text-xs tracking-wider"><th class="p-4">ID</th><th class="p-4">Preview</th><th class="p-4">Name</th><th class="p-4">Price</th><th class="p-4">Action</th></tr></thead><tbody>{rows}</tbody></table></div></div>')
+            rows = ""
+            for p in products:
+                rows += f'''<tr class="border-b">
+                    <td class="p-4 text-xs">#{p[0]}</td>
+                    <td class="p-4"><img src="{p[3]}" class="thumb-crop"></td>
+                    <td class="p-4 font-bold">{p[1]}</td>
+                    <td class="p-4">
+                        <form action="/admin/update_item" method="POST" class="flex flex-col gap-2">
+                            <input type="hidden" name="id" value="{p[0]}">
+                            <textarea name="desc" class="text-xs border p-2 rounded w-full h-20" placeholder="Description...">{p[4] if p[4] else ""}</textarea>
+                            <div class="flex gap-2 items-center">
+                                <input name="price" type="number" step="0.01" value="{p[2]}" class="border text-xs p-1 rounded w-20">
+                                <button class="bg-indigo-500 text-white text-[10px] px-2 py-1 rounded">Update</button>
+                            </div>
+                        </form>
+                    </td>
+                    <td class="p-4 text-center"><a href="/admin/delete?id={p[0]}" class="text-red-500 font-semibold hover:underline text-xs">Delete</a></td>
+                </tr>'''
+            self.send_html(get_header(user) + f'<div class="max-w-6xl mx-auto p-6"><div class="bg-white p-10 rounded-3xl shadow-sm border mb-8"><h2 class="text-2xl font-bold mb-6">Add New Product</h2><form action="/admin/add" method="POST" class="grid grid-cols-1 md:grid-cols-4 gap-4"><input name="name" placeholder="Name" class="border p-3 rounded-xl outline-none" required><input name="price" type="number" step="0.01" placeholder="Price" class="border p-3 rounded-xl outline-none" required><input name="img" placeholder="Image URL" class="border p-3 rounded-xl outline-none"><textarea name="desc" placeholder="Description" class="border p-3 rounded-xl outline-none md:col-span-3"></textarea><button class="bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">Add Item</button></form></div><div class="bg-white p-6 rounded-3xl shadow-sm border overflow-hidden"><h2 class="text-2xl font-bold mb-6 px-4 pt-4 text-gray-900">Inventory</h2><table class="w-full text-left"><thead><tr class="bg-gray-50 border-b text-gray-500 uppercase text-xs tracking-wider"><th class="p-4">ID</th><th class="p-4">Preview</th><th class="p-4">Name</th><th class="p-4">Modify Details</th><th class="p-4 text-center">Action</th></tr></thead><tbody>{rows}</tbody></table></div></div>')
+
+        elif parsed_path.path == '/cart':
+            if not user or user['role'] == 'admin': self.redirect('/'); return
+            conn = sqlite3.connect(DB_PATH)
+            cart_items = conn.execute('''SELECT products.name, products.price, carts.quantity, products.img, products.id, carts.id, products.description FROM carts JOIN products ON carts.product_id = products.id WHERE carts.username = ?''', (user['name'],)).fetchall()
+            conn.close()
+            items_html = "".join([f'''<div class="flex items-center justify-between border-b border-gray-50 py-6 cart-item" data-price="{item[1]}" id="item-{item[5]}">
+                    <div class="flex items-center">
+                        <input type="checkbox" name="selected" class="cart-checkbox mr-6 w-6 h-6 rounded-lg border-gray-200 text-indigo-600" checked onchange="calc()">
+                        <img src="{item[3] if item[3] else "https://via.placeholder.com/200"}" class="thumb-crop mr-6 shadow-sm">
+                        <div class="space-y-1">
+                            <h4 class="font-bold text-gray-900">{item[0]}</h4>
+                            <p class="text-gray-400 text-xs line-clamp-1">{item[6] if item[6] else ''}</p>
+                            <p class="text-gray-400 text-xs">${item[1]:,.2f} per unit</p>
+                            <div class="flex items-center gap-3 pt-2">
+                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="change" value="-1"><button class="w-8 h-8 bg-gray-100 rounded hover:bg-gray-200">-</button></form>
+                                <span class="qty-display font-bold text-sm w-4 text-center">{item[2]}</span>
+                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="change" value="1"><button class="w-8 h-8 bg-gray-100 rounded hover:bg-gray-200">+</button></form>
+                                <a href="/cart/delete?id={item[5]}" class="ml-6 text-xs font-bold text-red-400 hover:text-red-600">Remove</a>
+                            </div>
+                        </div></div>
+                    <div class="font-extrabold text-gray-900 text-lg">${(item[1]*item[2]):,.2f}</div></div>''' for item in cart_items])
+            
+            script = '<script>function calc(){let t=0;document.querySelectorAll(".cart-item").forEach(i=>{if(i.querySelector(".cart-checkbox").checked){t+=parseFloat(i.dataset.price)*parseInt(i.querySelector(".qty-display").innerText)}});document.getElementById("total-display").innerText="$"+t.toLocaleString(undefined,{minimumFractionDigits:2})}window.onload=calc;</script>'
+            self.send_html(get_header(user) + f'''<div class="max-w-4xl mx-auto p-10 bg-white mt-10 rounded-[2.5rem] shadow-2xl border border-gray-50"><h2 class="text-4xl font-extrabold mb-10 text-gray-900 tracking-tight">Shopping Cart</h2><div class="divide-y divide-gray-50">{items_html if cart_items else '<p class="text-gray-400 text-center py-20 text-lg font-medium italic">Bag is empty.</p>'}<div class="mt-12 flex justify-between items-center p-8 bg-gray-50 rounded-[2rem]"><span class="text-xl font-bold text-gray-500">Total</span><span class="text-4xl font-black text-indigo-600" id="total-display">$0.00</span></div><div class="flex gap-6 mt-10"><button onclick="location.reload()" class="flex-1 border py-5 rounded-2xl text-gray-500">Refresh</button><button class="flex-[2] bg-indigo-600 text-white py-5 rounded-2xl font-extrabold shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95">Checkout</button></div></div></div>{script}''')
 
         elif parsed_path.path == '/profile':
             if not user: self.redirect('/login'); return
             addr_section = ""
             if user['role'] != 'admin':
-                conn = sqlite3.connect(DB_PATH)
-                addr_list = conn.execute("SELECT id, address_text FROM addresses WHERE username = ?", (user['name'],)).fetchall()
-                conn.close()
+                conn = sqlite3.connect(DB_PATH); addr_list = conn.execute("SELECT id, address_text FROM addresses WHERE username = ?", (user['name'],)).fetchall(); conn.close()
                 addr_html = "".join([f'<div class="p-4 bg-gray-50 rounded-xl mb-3 border flex justify-between items-center group"><span>{a[1]}</span><div class="flex gap-3"><button onclick="document.getElementById(\'edit-addr-{a[0]}\').classList.toggle(\'hidden\')" class="text-indigo-400 font-bold">Edit</button><a href="/profile/address/delete?id={a[0]}" class="text-red-400 font-bold">×</a></div></div><form id="edit-addr-{a[0]}" action="/profile/address/edit" method="POST" class="hidden mb-4 p-4 border rounded-xl bg-white shadow-inner"><input type="hidden" name="id" value="{a[0]}"><textarea name="address" class="w-full border p-2 rounded-lg text-sm" required>{a[1]}</textarea><button class="bg-indigo-600 text-white px-4 py-2 rounded-xl mt-2 text-xs font-bold">Save Changes</button></form>' for a in addr_list])
-                addr_error = "Limit reached (Max 3 addresses)." if query_params.get('error', [''])[0] == 'limit' else ""
-                addr_section = f'''<hr class="my-8"><h3 class="font-bold text-lg mb-4 text-gray-900">Shipping Addresses (Max 3)</h3><p class="text-red-500 text-xs mb-3">{addr_error}</p>{addr_html if addr_list else '<p class="text-sm text-gray-400 mb-6 italic">No addresses saved yet.</p>'}{f'<form action="/profile/address/add" method="POST" class="mt-6"><textarea name="address" class="w-full border border-gray-200 p-4 rounded-2xl text-sm mb-3 outline-none focus:ring-2 focus:ring-indigo-100" placeholder="Enter full address here..." required></textarea><button class="bg-gray-900 text-white text-sm px-6 py-3 rounded-2xl font-bold hover:bg-gray-800 transition shadow-lg">Add New Address</button></form>' if len(addr_list) < 3 else ''}'''
-            success_msg = "Profile updated successfully!" if query_params.get('success', [''])[0] == '1' else ""
-            self.send_html(get_header(user) + f'''<div class="max-w-md mx-auto mt-10 p-10 bg-white rounded-[2rem] shadow-2xl border border-gray-100"><h2 class="text-3xl font-extrabold text-center mb-8 text-gray-900">Account Settings</h2><p class="text-green-500 text-center mb-6 font-medium">{success_msg}</p><form action="/profile/update" method="POST" class="space-y-6 mb-10"><div class="space-y-1"><label class="block text-xs font-bold text-gray-400 uppercase tracking-widest ml-1">Username</label><input value="{user['name']}" class="w-full border-none p-4 rounded-2xl bg-gray-100 font-semibold text-gray-500 cursor-not-allowed" readonly></div><div class="space-y-1"><label class="block text-xs font-bold text-gray-400 uppercase tracking-widest ml-1">Update Password</label><input name="new_pass" type="password" placeholder="Min 8 characters" class="w-full border border-gray-200 p-4 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-50/50"></div><button class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-extrabold shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95">Save Profile</button></form>{addr_section}</div>''')
-
-        elif parsed_path.path == '/cart':
-            # MODIFIED: Deny Admin access to the cart page
-            if not user or user['role'] == 'admin': self.redirect('/'); return
-            conn = sqlite3.connect(DB_PATH)
-            cart_items = conn.execute('''SELECT products.name, products.price, carts.quantity, products.img, products.id, carts.id FROM carts JOIN products ON carts.product_id = products.id WHERE carts.username = ?''', (user['name'],)).fetchall()
-            conn.close()
-            items_html = ""
-            for item in cart_items:
-                items_html += f'''<div class="flex items-center justify-between border-b border-gray-50 py-6 cart-item" data-price="{item[1]}" id="item-{item[5]}">
-                    <div class="flex items-center">
-                        <input type="checkbox" name="selected" value="{item[4]}" class="cart-checkbox mr-6 w-6 h-6 rounded-lg border-gray-200 text-indigo-600 focus:ring-indigo-500 cursor-pointer" checked onchange="calc()">
-                        <img src="{item[3] if item[3] else "https://via.placeholder.com/200"}" class="thumb-crop mr-6 shadow-sm">
-                        <div class="space-y-1">
-                            <h4 class="font-bold text-gray-900">{item[0]}</h4>
-                            <p class="text-gray-400 text-xs">${item[1]:,.2f} per unit</p>
-                            <div class="flex items-center gap-3 pt-2">
-                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="change" value="-1"><button class="w-8 h-8 bg-gray-100 flex items-center justify-center rounded-lg hover:bg-gray-200 transition">-</button></form>
-                                <span class="qty-display font-bold text-sm w-4 text-center">{item[2]}</span>
-                                <form action="/cart/qty" method="POST"><input type="hidden" name="id" value="{item[5]}"><input type="hidden" name="change" value="1"><button class="w-8 h-8 bg-gray-100 flex items-center justify-center rounded-lg hover:bg-gray-200 transition">+</button></form>
-                                <a href="/cart/delete?id={item[5]}" class="ml-6 text-xs font-bold text-red-400 hover:text-red-600">Remove</a>
-                            </div>
-                        </div></div>
-                    <div class="font-extrabold text-gray-900 text-lg">${(item[1]*item[2]):,.2f}</div></div>'''
-            
-            script = '''<script>
-                function calc() {
-                    let total = 0;
-                    document.querySelectorAll('.cart-item').forEach(item => {
-                        if(item.querySelector('.cart-checkbox').checked) {
-                            let price = parseFloat(item.dataset.price);
-                            let qty = parseInt(item.querySelector('.qty-display').innerText);
-                            total += price * qty;
-                        }
-                    });
-                    document.getElementById('total-display').innerText = '$' + total.toLocaleString(undefined, {minimumFractionDigits: 2});
-                }
-                window.onload = calc;
-            </script>'''
-            
-            self.send_html(get_header(user) + f'''<div class="max-w-4xl mx-auto p-10 bg-white mt-10 rounded-[2.5rem] shadow-2xl border border-gray-50"><h2 class="text-4xl font-extrabold mb-10 text-gray-900 tracking-tight">Shopping Cart</h2>
-                <div class="divide-y divide-gray-50">{items_html if cart_items else '<p class="text-gray-400 text-center py-20 text-lg font-medium italic">Your bag is currently empty.</p>'}<div class="mt-12 flex justify-between items-center p-8 bg-gray-50 rounded-[2rem]"><span class="text-xl font-bold text-gray-500">Selected Total</span><span class="text-4xl font-black text-indigo-600" id="total-display">$0.00</span></div>
-                <div class="flex gap-6 mt-10"><button onclick="location.reload()" class="flex-1 border border-gray-200 py-5 rounded-2xl font-extrabold text-gray-500 hover:bg-gray-50 transition-all">Refresh Bag</button><button class="flex-[2] bg-indigo-600 text-white py-5 rounded-2xl font-extrabold shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95">Checkout Selected</button></div></div></div>{script}''')
+                addr_section = f'''<hr class="my-8"><h3 class="font-bold text-lg mb-4 text-gray-900">Addresses (Max 3)</h3>{addr_html}{f'<form action="/profile/address/add" method="POST" class="mt-6"><textarea name="address" class="w-full border border-gray-200 p-4 rounded-2xl text-sm mb-3" placeholder="New address..." required></textarea><button class="bg-gray-900 text-white text-sm px-6 py-3 rounded-2xl font-bold">Add Address</button></form>' if len(addr_list) < 3 else ""}'''
+            self.send_html(get_header(user) + f'''<div class="max-w-md mx-auto mt-10 p-10 bg-white rounded-[2rem] shadow-2xl border border-gray-100"><h2 class="text-3xl font-extrabold text-center mb-8">Account</h2><form action="/profile/update" method="POST" class="space-y-6 mb-10"><input value="{user['name']}" class="w-full p-4 rounded-2xl bg-gray-100" readonly><input name="new_pass" type="password" placeholder="New Password" class="w-full border p-4 rounded-2xl outline-none"><button class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-extrabold transition-all active:scale-95">Save Profile</button></form>{addr_section}</div>''')
 
         elif parsed_path.path == '/logout':
             self.send_response(302); self.send_header('Set-Cookie', 'user=; Max-Age=0; Path=/'); self.send_header('Location', '/'); self.end_headers()
@@ -227,7 +261,6 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == '/register':
             u, p = data.get('user', [''])[0], data.get('pass', [''])[0]
-            if len(u) < 3 or len(p) < 8: self.redirect('/register?error=short_user' if len(u)<3 else '/register?error=short_pass'); return
             conn = sqlite3.connect(DB_PATH)
             try: conn.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)", (u, p, 'customer')); conn.commit(); self.redirect('/login')
             except: self.redirect('/register?error=exists')
@@ -243,7 +276,6 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
             if not user_session: self.redirect('/login'); return
             np = data.get('new_pass', [''])[0]
             if np:
-                if len(np) < 8: self.redirect('/profile?error=short_pass'); return
                 conn = sqlite3.connect(DB_PATH); conn.execute("UPDATE users SET password=? WHERE username=?", (np, user_session['name'])); conn.commit(); conn.close()
             self.redirect('/profile?success=1')
 
@@ -252,9 +284,8 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
             addr = data.get('address', [''])[0]
             conn = sqlite3.connect(DB_PATH)
             count = conn.execute("SELECT count(*) FROM addresses WHERE username=?", (user_session['name'],)).fetchone()[0]
-            if count >= 3: conn.close(); self.redirect('/profile?error=limit'); return
-            conn.execute("INSERT INTO addresses (username, address_text) VALUES (?, ?)", (user_session['name'], addr)); conn.commit(); conn.close()
-            self.redirect('/profile')
+            if count < 3: conn.execute("INSERT INTO addresses (username, address_text) VALUES (?, ?)", (user_session['name'], addr)); conn.commit()
+            conn.close(); self.redirect('/profile')
 
         elif self.path == '/profile/address/edit':
             if not user_session: self.redirect('/login'); return
@@ -263,7 +294,6 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
             self.redirect('/profile')
 
         elif self.path == '/cart/qty':
-            # MODIFIED: Deny Admin ability to change cart quantities
             if not user_session or user_session['role'] == 'admin': self.redirect('/'); return
             cid, change = data.get('id', [''])[0], int(data.get('change', ['0'])[0])
             conn = sqlite3.connect(DB_PATH)
@@ -273,19 +303,26 @@ class ShopHandler(http.server.BaseHTTPRequestHandler):
 
         elif self.path == '/admin/add':
             if user_session and user_session['role'] == 'admin':
-                n, pr, i = data.get('name', [''])[0], data.get('price', ['0'])[0], data.get('img', [''])[0]
-                conn = sqlite3.connect(DB_PATH); conn.execute("INSERT INTO products (name, price, img) VALUES (?,?,?)", (n, float(pr), i)); conn.commit(); conn.close()
+                n, pr, i, d = data.get('name', [''])[0], data.get('price', ['0'])[0], data.get('img', [''])[0], data.get('desc', [''])[0]
+                conn = sqlite3.connect(DB_PATH); conn.execute("INSERT INTO products (name, price, img, description) VALUES (?,?,?,?)", (n, float(pr), i, d)); conn.commit(); conn.close()
+            self.redirect('/admin')
+
+        elif self.path == '/admin/update_item':
+            if user_session and user_session['role'] == 'admin':
+                pid, pr, d = data.get('id', [''])[0], data.get('price', ['0'])[0], data.get('desc', [''])[0]
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("UPDATE products SET price=?, description=? WHERE id=?", (float(pr), d, pid))
+                conn.commit(); conn.close()
             self.redirect('/admin')
 
         elif self.path == '/cart/add':
-            # MODIFIED: Deny Admin ability to add items to cart
             if not user_session or user_session['role'] == 'admin': self.redirect('/'); return
             pid = data.get('product_id', [''])[0]
             conn = sqlite3.connect(DB_PATH)
             existing = conn.execute('SELECT quantity FROM carts WHERE username = ? AND product_id = ?', (user_session['name'], pid)).fetchone()
             if existing: conn.execute('UPDATE carts SET quantity = quantity + 1 WHERE username = ? AND product_id = ?', (user_session['name'], pid))
             else: conn.execute('INSERT INTO carts (username, product_id, quantity) VALUES (?, ?, ?)', (user_session['name'], pid, 1))
-            conn.commit(); conn.close(); self.redirect('/')
+            conn.commit(); conn.close(); self.redirect('/cart')
 
     def send_html(self, content):
         self.send_response(200); self.send_header('Content-type', 'text/html; charset=utf-8'); self.end_headers(); self.wfile.write(content.encode())
